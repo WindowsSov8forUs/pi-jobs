@@ -1,0 +1,35 @@
+{
+  "state": "blocked",
+  "detail": "Waiting for a user decision",
+  "fan": [
+    {
+      "id": "job-1",
+      "kind": "job",
+      "label": "Inspect the existing implementation",
+      "startedAt": 1000,
+      "doneAt": 0
+    },
+    {
+      "id": "job-2",
+      "kind": "job",
+      "label": "Implement and verify the change",
+      "startedAt": 0,
+      "doneAt": 0
+    }
+  ],
+  "tokens": 12000,
+  "linkScanOffset": 4096,
+  "linkScanPath": "C:\\Users\\example\\.pi\\agent\\sessions\\project\\session.jsonl",
+  "intent": "Deliver a verified multi-stage change",
+  "name": "Example multi-stage task",
+  "nameSource": "model",
+  "sessionId": "12345678-1234-1234-1234-123456789abc",
+  "resumeSessionId": "12345678-1234-1234-1234-123456789abc",
+  "daemonShort": "12345678",
+  "cliVersion": "0.83.0",
+  "cwd": "C:\\workspace\\example",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-01T00:01:00.000Z",
+  "firstTerminalAt": "2026-01-01T00:01:00.000Z",
+  "activeTimeMs": 45000
+}
