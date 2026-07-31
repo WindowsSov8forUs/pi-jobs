@@ -1,6 +1,6 @@
 {
   "name": "pi-jobs",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Persistent multi-stage job queues and external memory for Pi.",
   "private": true,
   "type": "module",

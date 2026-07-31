@@ -9,13 +9,13 @@ When a task has multiple execution stages, the model can start a jobs lifecycle,
 Install a pinned GitHub Release, replacing `OWNER` with the repository owner:
 
 ```bash
-pi install git:github.com/OWNER/pi-jobs@v0.1.1
+pi install git:github.com/OWNER/pi-jobs@v0.1.2
 ```
 
 To try it without changing Pi settings:
 
 ```bash
-pi -e git:github.com/OWNER/pi-jobs@v0.1.1
+pi -e git:github.com/OWNER/pi-jobs@v0.1.2
 ```
 
 A tag pins the installed version. After a new release, install the new tag explicitly. An unpinned default-branch install can instead be updated with `pi update --extensions`, but is less reproducible.
