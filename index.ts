@@ -108,7 +108,13 @@ type MessageLike = {
   role?: string;
   content?: unknown;
   timestamp?: number;
-  usage?: { totalTokens?: number };
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    totalTokens?: number;
+  };
 };
 
 const stateSchema = StringEnum(["working", "blocked", "done"] as const);
@@ -309,6 +315,14 @@ function formatDuration(milliseconds: number): string {
   return `${hours}h ${(minutes % 60).toString().padStart(2, "0")}m`;
 }
 
+function formatTokens(tokens: number): string {
+  const value = Math.max(0, tokens);
+  const compact = (amount: number) => amount.toFixed(1).replace(/\.0$/, "");
+  if (value >= 1_000_000) return `${compact(value / 1_000_000)}M`;
+  if (value >= 1_000) return `${compact(value / 1_000)}k`;
+  return Math.round(value).toString();
+}
+
 function isInside(root: string, target: string): boolean {
   const pathFromRoot = relative(root, target);
   return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !isAbsolute(pathFromRoot));
@@ -317,6 +331,7 @@ function isInside(root: string, target: string): boolean {
 export default function piJobs(pi: ExtensionAPI) {
   let paths: RuntimePaths | undefined;
   let state: JobsState | undefined;
+  let agentRunning = false;
   let activeStartedAt: number | undefined;
   let pendingUserMessage: TimelineEntry | undefined;
   let operationTail: Promise<void> = Promise.resolve();
@@ -352,15 +367,34 @@ export default function piJobs(pi: ExtensionAPI) {
     return paths;
   };
 
+  const messageTokens = (message: MessageLike | undefined): number => {
+    const usage = message?.usage;
+    if (!usage) return 0;
+    const input = typeof usage.input === "number" && Number.isFinite(usage.input) ? usage.input : undefined;
+    const output = typeof usage.output === "number" && Number.isFinite(usage.output) ? usage.output : undefined;
+    if (input !== undefined || output !== undefined) return Math.max(0, (input ?? 0) + (output ?? 0));
+    const total = typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens) ? usage.totalTokens : 0;
+    const cacheRead = typeof usage.cacheRead === "number" && Number.isFinite(usage.cacheRead) ? usage.cacheRead : 0;
+    const cacheWrite = typeof usage.cacheWrite === "number" && Number.isFinite(usage.cacheWrite) ? usage.cacheWrite : 0;
+    return Math.max(0, total - cacheRead - cacheWrite);
+  };
+
   const calculateTokens = (ctx: ExtensionContext, extraMessage?: MessageLike): number => {
     let total = 0;
     let includesExtra = false;
+    const lifecycleStartedAt = state ? Date.parse(state.createdAt) : Number.NaN;
     for (const entry of ctx.sessionManager.getBranch() as unknown as Array<Record<string, unknown>>) {
       if (entry.type !== "message") continue;
       const message = entry.message as MessageLike | undefined;
       if (message?.role !== "assistant") continue;
-      const value = message.usage?.totalTokens;
-      if (typeof value === "number" && Number.isFinite(value)) total += value;
+      if (
+        Number.isFinite(lifecycleStartedAt) &&
+        typeof message.timestamp === "number" &&
+        message.timestamp < lifecycleStartedAt
+      ) {
+        continue;
+      }
+      total += messageTokens(message);
       if (
         extraMessage &&
         (message === extraMessage ||
@@ -369,9 +403,14 @@ export default function piJobs(pi: ExtensionAPI) {
         includesExtra = true;
       }
     }
-    if (!includesExtra && extraMessage?.role === "assistant") {
-      const value = extraMessage.usage?.totalTokens;
-      if (typeof value === "number" && Number.isFinite(value)) total += value;
+    if (
+      !includesExtra &&
+      extraMessage?.role === "assistant" &&
+      (!Number.isFinite(lifecycleStartedAt) ||
+        typeof extraMessage.timestamp !== "number" ||
+        extraMessage.timestamp >= lifecycleStartedAt)
+    ) {
+      total += messageTokens(extraMessage);
     }
     return total;
   };
@@ -384,7 +423,7 @@ export default function piJobs(pi: ExtensionAPI) {
     state.daemonShort = runtimePaths.daemonShort;
     state.cwd = ctx.cwd;
     state.cliVersion = CLI_VERSION;
-    state.tokens = calculateTokens(ctx, extraMessage);
+    if (state.state !== "done") state.tokens = calculateTokens(ctx, extraMessage);
     state.linkScanPath = sessionFile ?? null;
     try {
       state.linkScanOffset = sessionFile ? statSync(sessionFile).size : 0;
@@ -402,9 +441,17 @@ export default function piJobs(pi: ExtensionAPI) {
     if (state && state.firstTerminalAt === null) state.firstTerminalAt = isoTime();
   };
 
+  const checkpointActiveTime = (): void => {
+    if (!state || activeStartedAt === undefined) return;
+    const now = Date.now();
+    state.activeTimeMs += Math.max(0, now - activeStartedAt);
+    activeStartedAt = now;
+  };
+
   const persistState = (ctx: ExtensionContext, extraMessage?: MessageLike): void => {
     if (!state) return;
     const runtimePaths = ensurePaths(ctx);
+    checkpointActiveTime();
     refreshMetadata(ctx, extraMessage);
     state.updatedAt = isoTime();
     atomicWriteJson(runtimePaths.statePath, state);
@@ -431,7 +478,7 @@ export default function piJobs(pi: ExtensionAPI) {
   const renderWidget = (theme: Theme, width: number): string[] => {
     if (!state || state.fan.length === 0) return [];
     const title = theme.fg("accent", `Π ${state.name}...`);
-    const metrics = theme.fg("dim", `(${formatDuration(currentActiveTime())} · ↓ ${state.tokens.toLocaleString("en-US")} tokens)`);
+    const metrics = theme.fg("dim", `(${formatDuration(currentActiveTime())} · ↓ ${formatTokens(state.tokens)} tokens)`);
     const lines = [truncateToWidth(`${title} ${metrics}`, width, "…")];
     for (const [index, job] of state.fan.slice(0, 5).entries()) {
       const line = index === 0
@@ -465,8 +512,14 @@ export default function piJobs(pi: ExtensionAPI) {
   };
 
   const settleActiveTime = (): void => {
-    if (activeStartedAt === undefined) return;
-    if (state) state.activeTimeMs += Math.max(0, Date.now() - activeStartedAt);
+    checkpointActiveTime();
+    activeStartedAt = undefined;
+  };
+
+  const freezeLifecycle = (ctx: ExtensionContext): void => {
+    if (!state || state.state === "done") return;
+    checkpointActiveTime();
+    state.tokens = calculateTokens(ctx);
     activeStartedAt = undefined;
   };
 
@@ -565,7 +618,7 @@ export default function piJobs(pi: ExtensionAPI) {
           state: "working",
           detail: cleanText(params.detail ?? params.intent, 2000),
           fan: [],
-          tokens: calculateTokens(ctx),
+          tokens: 0,
           linkScanOffset: 0,
           linkScanPath: null,
           intent: cleanText(params.intent, 2000),
@@ -581,6 +634,7 @@ export default function piJobs(pi: ExtensionAPI) {
           firstTerminalAt: null,
           activeTimeMs: 0,
         };
+        activeStartedAt = agentRunning ? Date.now() : undefined;
         if (pendingUserMessage) {
           appendTimeline({ ...pendingUserMessage, state: "working" });
           pendingUserMessage = undefined;
@@ -672,6 +726,7 @@ export default function piJobs(pi: ExtensionAPI) {
         current.state.fan.shift();
         activateHead();
         if (current.state.fan.length === 0) {
+          freezeLifecycle(ctx);
           current.state.state = "done";
           markTerminal();
         }
@@ -723,6 +778,10 @@ export default function piJobs(pi: ExtensionAPI) {
         if (params.state === "done" && current.state.fan.length > 0) {
           throw new Error("Cannot mark jobs done while fan is non-empty. Use finish_job for each head or finish_jobs to clear the queue.");
         }
+        if (current.state.state === "done" && params.state !== "done") {
+          throw new Error("This jobs lifecycle is done. Call start_jobs to begin a new lifecycle.");
+        }
+        if (params.state === "done") freezeLifecycle(ctx);
         current.state.state = params.state;
         current.state.detail = cleanText(params.detail, 2000);
         if (params.state === "blocked" || params.state === "done") markTerminal();
@@ -749,6 +808,7 @@ export default function piJobs(pi: ExtensionAPI) {
         const completedAt = Date.now();
         const removed = current.state.fan.map((job) => ({ ...job, doneAt: completedAt }));
         current.state.fan = [];
+        freezeLifecycle(ctx);
         current.state.state = "done";
         if (params.detail) current.state.detail = cleanText(params.detail, 2000);
         markTerminal();
@@ -884,6 +944,8 @@ export default function piJobs(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     await enqueue(() => {
       currentContext = ctx;
+      agentRunning = false;
+      activeStartedAt = undefined;
       paths = resolvePaths(ctx);
       state = loadStateIfPresent(ctx);
       pendingUserMessage = undefined;
@@ -906,13 +968,15 @@ export default function piJobs(pi: ExtensionAPI) {
 
   pi.on("agent_start", (_event, ctx) => {
     currentContext = ctx;
-    activeStartedAt ??= Date.now();
+    agentRunning = true;
+    if (state && state.state !== "done") activeStartedAt ??= Date.now();
     requestWidgetRender();
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     await enqueue(() => {
       settleActiveTime();
+      agentRunning = false;
       if (state) persistState(ctx);
       syncWidget(ctx);
     });
@@ -959,6 +1023,7 @@ export default function piJobs(pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, ctx) => {
     await enqueue(() => {
       settleActiveTime();
+      agentRunning = false;
       if (state) persistState(ctx);
       stopSpinner();
       widgetTui = undefined;

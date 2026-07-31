@@ -200,7 +200,7 @@ try {
   assert.equal(state.resumeSessionId, sessionId);
   assert.equal(state.linkScanPath, sessionFile);
   assert.equal(state.linkScanOffset, statSync(sessionFile).size);
-  assert.equal(state.activeTimeMs, 0);
+  assert.equal(state.activeTimeMs, 0, "jobs timing starts at start_jobs, excluding the earlier part of the agent run");
   assert.equal("inFlight" in state, false);
   assert.match(state.cliVersion, /^(unknown|\d+\.\d+\.\d+)/);
   assert.deepEqual(readTimeline(), [{
@@ -298,12 +298,14 @@ try {
       role: "assistant",
       content: [{ type: "text", text: "A checkpoint" }],
       timestamp: 104_500,
-      usage: { totalTokens: 120 },
+      usage: { totalTokens: 112_345, input: 12_000, output: 345, cacheRead: 100_000, cacheWrite: 0 },
     },
   }];
   await emit("message_end", { message: branch[0].message });
   state = readState();
-  assert.equal(state.tokens, 120);
+  assert.equal(state.tokens, 12_345, "tokens include only input and output, excluding cache usage");
+  const tokenWidget = widgetFactory(runtime, theme).render(200);
+  assert.match(tokenWidget[0], /↓ 12\.3k tokens/, "widget uses compact k formatting");
   let timeline = readTimeline();
   assert.equal(timeline.at(-1).text, "A checkpoint");
   assert.equal(timeline.at(-1).detail, "Approval received");
@@ -313,27 +315,41 @@ try {
       role: "assistant",
       content: [{ type: "thinking", thinking: "hidden" }, { type: "toolCall", id: "x", name: "read", arguments: {} }],
       timestamp: 104_600,
-      usage: { totalTokens: 30 },
+      usage: { totalTokens: 30, input: 2, output: 3, cacheRead: 25, cacheWrite: 0 },
     },
   });
   timeline = readTimeline();
   assert.equal(timeline.length, 2, "thinking/tool-only assistant message must not enter timeline");
-  assert.equal(readState().tokens, 150, "an assistant event not yet in branch is included once");
+  assert.equal(readState().tokens, 12_350, "an assistant event not yet in branch is included once without cache tokens");
 
   branch = [{
     type: "message",
-    message: { role: "assistant", content: [], timestamp: 104_700, usage: { totalTokens: 7 } },
+    message: { role: "assistant", content: [], timestamp: 104_700, usage: { totalTokens: 7, input: 4, output: 1, cacheRead: 2, cacheWrite: 0 } },
   }];
   writeFileSync(sessionFile, '{"type":"session"}\n{"type":"message"}\n', "utf8");
   await emit("session_tree");
   state = readState();
-  assert.equal(state.tokens, 7, "tree navigation recalculates branch token totals");
+  assert.equal(state.tokens, 5, "tree navigation recalculates non-cache branch token totals");
   assert.equal(state.linkScanOffset, statSync(sessionFile).size);
+
+  branch = [{
+    type: "message",
+    message: {
+      role: "assistant",
+      content: [],
+      timestamp: 104_800,
+      usage: { totalTokens: 2_234_567, input: 1_234_000, output: 567, cacheRead: 1_000_000, cacheWrite: 0 },
+    },
+  }];
+  await emit("session_tree");
+  state = readState();
+  assert.equal(state.tokens, 1_234_567);
+  assert.match(widgetFactory(runtime, theme).render(200)[0], /↓ 1\.2M tokens/, "widget uses compact M formatting");
 
   now = 106_000;
   await emit("agent_settled");
   state = readState();
-  assert.equal(state.activeTimeMs, 6_000, "active time counts agent_start through settled");
+  assert.equal(state.activeTimeMs, 5_000, "active time counts only from start_jobs through settled");
 
   const cleared = await execute("finish_jobs", { detail: "No remaining stages are needed" });
   assert.match(cleared.content[0].text, /fan 队列已无剩余 job/);
@@ -343,6 +359,23 @@ try {
   assert.equal(widgets.has("pi-jobs"), false);
   const clearedAgain = await execute("finish_jobs", {});
   assert.match(clearedAgain.content[0].text, /fan 队列已无剩余 job/);
+  const frozenState = readState();
+  branch = [{
+    type: "message",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Post-completion discussion" }],
+      timestamp: 106_500,
+      usage: { totalTokens: 500_000, input: 200_000, output: 10_000, cacheRead: 290_000, cacheWrite: 0 },
+    },
+  }];
+  await emit("message_end", { message: branch[0].message });
+  assert.equal(readState().tokens, frozenState.tokens, "done lifecycle freezes token totals against later conversation");
+  assert.equal(readState().activeTimeMs, frozenState.activeTimeMs, "done lifecycle freezes active time");
+  await assert.rejects(
+    execute("update_jobs_state", { state: "working", detail: "Must restart" }),
+    /Call start_jobs to begin a new lifecycle/,
+  );
 
   const timelineBeforeReset = readFileSync(join(jobsPath, "timeline.jsonl"), "utf8");
   const memoryBeforeReset = readFileSync(join(jobsPath, "tmp", "notes", "context.md"), "utf8");
@@ -352,6 +385,7 @@ try {
   assert.equal(state.name, "Second lifecycle");
   assert.equal(state.state, "working");
   assert.equal(state.activeTimeMs, 0);
+  assert.equal(state.tokens, 0, "new lifecycle excludes assistant usage from before its createdAt");
   assert.equal(state.firstTerminalAt, null);
   assert.equal(readFileSync(join(jobsPath, "timeline.jsonl"), "utf8"), timelineBeforeReset, "reset preserves timeline");
   assert.equal(readFileSync(join(jobsPath, "tmp", "notes", "context.md"), "utf8"), memoryBeforeReset, "reset preserves tmp memory");

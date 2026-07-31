@@ -96,12 +96,12 @@ Use memory for evidence, intermediate data, long logs, and summaries needed acro
 }
 ```
 
-- `tokens` is the sum of `assistant.usage.totalTokens` on the current Pi branch.
-- `activeTimeMs` counts only `agent_start` through `agent_settled`; offline and user-wait time is excluded.
+- `tokens` is the sum of assistant `usage.input + usage.output` from the current lifecycle's `createdAt` until the queue becomes `done`. Cache reads and writes, earlier conversation, and post-completion discussion are excluded; older usage records fall back to `totalTokens - cacheRead - cacheWrite`.
+- `activeTimeMs` starts when `start_jobs` creates the lifecycle, counts only active agent execution, and freezes when the queue becomes `done`. Time before `start_jobs`, offline/user-wait time, and post-completion discussion are excluded. Active intervals are checkpointed on every state write, so `state.json` and `check_jobs` stay close to the live Widget value instead of updating only after settlement.
 - `firstTerminalAt` records the first transition to `blocked` or `done`.
 - `linkScanOffset` is the current session JSONL file size in bytes.
 - Job IDs are inferred from the current fan rather than a persisted counter. A completed ID may therefore be reused later.
-- The external queue is session-wide and does not rewind when `/tree` moves to an older conversation branch; only token totals are recalculated for the selected branch.
+- The external queue is session-wide and does not rewind when `/tree` moves to an older conversation branch. While a lifecycle is active, token totals are recalculated from lifecycle start on the selected branch; completed lifecycle metrics remain frozen.
 
 State writes use a temporary file and rename. A malformed state file produces an error and is never silently overwritten.
 
@@ -121,13 +121,13 @@ User text is stored in `detail`; finalized assistant text is stored in `text`. T
 While fan is non-empty, a widget above the editor shows:
 
 ```text
-Π Implement feature... (12.5s · ↓ 12,345 tokens)
+Π Implement feature... (12.5s · ↓ 12.3k tokens)
   ⠋ Inspect the codebase
   ▢ Implement the change
   ▢ Run focused tests
 ```
 
-The head uses a live Braille spinner. At most five jobs are shown; additional jobs appear as `... +N pending`. Empty fan removes the widget.
+The head uses a live Braille spinner. At most five jobs are shown; additional jobs appear as `... +N pending`. Token totals use compact `k`/`M` notation. Empty fan removes the widget.
 
 ## Development
 
