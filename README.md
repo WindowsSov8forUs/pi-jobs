@@ -48,6 +48,21 @@ Recommended flow:
 
 `finish_job` and `pend_job` accept only the current head ID. This guards against stale model state deleting or moving the wrong job.
 
+When `finish_job` removes the final item, `update_jobs_state` marks an empty lifecycle done, or `finish_jobs` clears the queue, the tool response reports the frozen metrics to the model in both text and `details.finalMetrics`:
+
+```json
+{
+  "activeTimeMs": 12500,
+  "activeTime": "12.5s",
+  "tokens": 12345,
+  "tokensDisplay": "12.3k",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "stateUpdatedAt": "2026-01-01T00:01:00.000Z"
+}
+```
+
+Non-terminal `finish_job` calls do not include `finalMetrics`.
+
 If `start_jobs` finds a non-empty fan, it refuses to reset it. Once fan is empty, `start_jobs` may begin a new lifecycle while preserving `timeline.jsonl` and `tmp/`.
 
 ## Persistent memory

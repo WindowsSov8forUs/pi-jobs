@@ -353,6 +353,15 @@ try {
 
   const cleared = await execute("finish_jobs", { detail: "No remaining stages are needed" });
   assert.match(cleared.content[0].text, /fan 队列已无剩余 job/);
+  assert.match(cleared.content[0].text, /Final metrics: active time 5\.0s \(5000 ms\); non-cache tokens 1\.2M \(1234567\)\./);
+  assert.deepEqual(cleared.details.finalMetrics, {
+    activeTimeMs: 5_000,
+    activeTime: "5.0s",
+    tokens: 1_234_567,
+    tokensDisplay: "1.2M",
+    createdAt: new Date(101_000).toISOString(),
+    stateUpdatedAt: new Date(106_000).toISOString(),
+  });
   assert.equal(cleared.details.headJob, undefined);
   assert.equal(readState().fan.length, 0);
   assert.equal(readState().state, "done");
@@ -412,6 +421,14 @@ try {
   await emit("session_start", { reason: "reload" });
   assert.equal(readTimeline().length, timelineCount, "resume/reload must not replay timeline messages");
   assert.ok(widgets.has("pi-jobs"), "resume restores non-empty fan widget");
+
+  const firstParallelFinished = await execute("finish_job", { jobId: "job-1" });
+  assert.equal(firstParallelFinished.details.finalMetrics, undefined, "non-terminal finish_job must not report final metrics");
+  const lastParallelFinished = await execute("finish_job", { jobId: "job-2" });
+  assert.match(lastParallelFinished.content[0].text, /Final metrics: active time 0\.0s \(0 ms\); non-cache tokens 0 \(0\)\./);
+  assert.equal(lastParallelFinished.details.finalMetrics.activeTimeMs, 0);
+  assert.equal(lastParallelFinished.details.finalMetrics.tokens, 0);
+  assert.equal(readState().state, "done");
 
   const savedState = readFileSync(join(jobsPath, "state.json"), "utf8");
   writeFileSync(join(jobsPath, "state.json"), "{invalid json", "utf8");

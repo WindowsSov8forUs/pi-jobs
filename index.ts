@@ -91,10 +91,20 @@ type TimelineEntry = {
   text: string;
 };
 
+type FinalMetrics = {
+  activeTimeMs: number;
+  activeTime: string;
+  tokens: number;
+  tokensDisplay: string;
+  createdAt: string;
+  stateUpdatedAt: string;
+};
+
 type ToolDetails = {
   state?: JobsState;
   headJob?: Job;
   affectedJobs?: Job[];
+  finalMetrics?: FinalMetrics;
   jobsPath: string;
   tmpPath: string;
   timelinePath: string;
@@ -542,12 +552,31 @@ export default function piJobs(pi: ExtensionAPI) {
     appendFileSync(paths.timelinePath, `${JSON.stringify(entry)}\n`, "utf8");
   };
 
-  const toolDetails = (runtimePaths: RuntimePaths, affectedJobs?: Job[]): ToolDetails => {
+  const finalMetrics = (): FinalMetrics | undefined => {
+    if (!state || state.state !== "done") return undefined;
+    return {
+      activeTimeMs: state.activeTimeMs,
+      activeTime: formatDuration(state.activeTimeMs),
+      tokens: state.tokens,
+      tokensDisplay: formatTokens(state.tokens),
+      createdAt: state.createdAt,
+      stateUpdatedAt: state.updatedAt,
+    };
+  };
+
+  const finalMetricsText = (): string => {
+    const metrics = finalMetrics();
+    if (!metrics) return "";
+    return `Final metrics: active time ${metrics.activeTime} (${metrics.activeTimeMs} ms); non-cache tokens ${metrics.tokensDisplay} (${metrics.tokens}).`;
+  };
+
+  const toolDetails = (runtimePaths: RuntimePaths, affectedJobs?: Job[], includeFinalMetrics = false): ToolDetails => {
     const stateSnapshot = state ? structuredClone(state) : undefined;
     return {
       state: stateSnapshot,
       headJob: stateSnapshot?.fan[0],
       affectedJobs: affectedJobs?.map((job) => ({ ...job })),
+      finalMetrics: includeFinalMetrics ? finalMetrics() : undefined,
       jobsPath: runtimePaths.jobsPath,
       tmpPath: runtimePaths.tmpPath,
       timelinePath: runtimePaths.timelinePath,
@@ -733,10 +762,11 @@ export default function piJobs(pi: ExtensionAPI) {
         persistState(ctx);
         syncWidget(ctx);
         const next = current.state.fan[0];
+        const lifecycleDone = current.state.state === "done";
         const text = next
           ? `Finished ${finished.id}. Current head job: ${next.id} — ${next.label}`
-          : `Finished ${finished.id}. ${noRemainingText}`;
-        return { content: [{ type: "text", text }], details: toolDetails(current.paths, [finished]) };
+          : `Finished ${finished.id}. ${noRemainingText}\n${finalMetricsText()}`;
+        return { content: [{ type: "text", text }], details: toolDetails(current.paths, [finished], lifecycleDone) };
       });
     },
   });
@@ -788,10 +818,11 @@ export default function piJobs(pi: ExtensionAPI) {
         persistState(ctx);
         syncWidget(ctx);
         const head = current.state.fan[0];
+        const lifecycleDone = current.state.state === "done";
         const text = head
           ? `Jobs state updated to ${params.state}. Current head job: ${head.id} — ${head.label}`
-          : `Jobs state updated to ${params.state}. ${noRemainingText}`;
-        return { content: [{ type: "text", text }], details: toolDetails(current.paths) };
+          : `Jobs state updated to ${params.state}. ${noRemainingText}${lifecycleDone ? `\n${finalMetricsText()}` : ""}`;
+        return { content: [{ type: "text", text }], details: toolDetails(current.paths, undefined, lifecycleDone) };
       });
     },
   });
@@ -815,8 +846,8 @@ export default function piJobs(pi: ExtensionAPI) {
         persistState(ctx);
         syncWidget(ctx);
         return {
-          content: [{ type: "text", text: `Cleared ${removed.length} job${removed.length === 1 ? "" : "s"} and marked jobs done. ${noRemainingText}` }],
-          details: toolDetails(current.paths, removed),
+          content: [{ type: "text", text: `Cleared ${removed.length} job${removed.length === 1 ? "" : "s"} and marked jobs done. ${noRemainingText}\n${finalMetricsText()}` }],
+          details: toolDetails(current.paths, removed, true),
         };
       });
     },
