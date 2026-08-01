@@ -229,11 +229,11 @@ try {
   const component = widgetFactory(runtime, theme);
   const widgetLines = component.render(200);
   assert.equal(widgetLines.length, 7, "title, five jobs, and overflow should render");
-  assert.match(widgetLines[0], /Π Feature rollout/);
+  assert.match(widgetLines[0], /^<accent>⠋<\/accent> <accent>Feature rollout/);
   assert.match(widgetLines[0], /↓ 0 tokens/);
-  assert.match(widgetLines[1], /⠋/);
-  assert.match(widgetLines[1], /Inspect code/);
-  assert.match(widgetLines[6], /\+1 pending/);
+  assert.equal(widgetLines[1], "  └ <accent>■ <bold>Inspect code</bold></accent>");
+  assert.equal(widgetLines[2], "    <muted>□ Design changes</muted>");
+  assert.equal(widgetLines[6], "<dim>     ... +1 pending</dim>");
 
   await assert.rejects(
     execute("start_jobs", { name: "Wrong reset", intent: "Must fail" }),

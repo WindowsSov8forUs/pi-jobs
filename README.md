@@ -136,13 +136,13 @@ User text is stored in `detail`; finalized assistant text is stored in `text`. T
 While fan is non-empty, a widget above the editor shows:
 
 ```text
-Π Implement feature... (12.5s · ↓ 12.3k tokens)
-  ⠋ Inspect the codebase
-  ▢ Implement the change
-  ▢ Run focused tests
+⠦ Implement feature... (12.5s · ↓ 12.3k tokens)
+  └ ■ Inspect the codebase
+    □ Implement the change
+    □ Run focused tests
 ```
 
-The head uses a live Braille spinner. At most five jobs are shown; additional jobs appear as `... +N pending`. Token totals use compact `k`/`M` notation. Empty fan removes the widget.
+The title uses a live Braille spinner. The current job is marked `■` under a `└` connector, while pending jobs use `□`. At most five jobs are shown; additional jobs appear as `... +N pending`. Token totals use compact `k`/`M` notation. Empty fan removes the widget.
 
 ## Development
 

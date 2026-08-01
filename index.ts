@@ -487,17 +487,18 @@ export default function piJobs(pi: ExtensionAPI) {
 
   const renderWidget = (theme: Theme, width: number): string[] => {
     if (!state || state.fan.length === 0) return [];
-    const title = theme.fg("accent", `Π ${state.name}...`);
+    const spinner = theme.fg("accent", SPINNER_FRAMES[spinnerFrame]);
+    const title = theme.fg("accent", `${state.name}...`);
     const metrics = theme.fg("dim", `(${formatDuration(currentActiveTime())} · ↓ ${formatTokens(state.tokens)} tokens)`);
-    const lines = [truncateToWidth(`${title} ${metrics}`, width, "…")];
+    const lines = [truncateToWidth(`${spinner} ${title} ${metrics}`, width, "…")];
     for (const [index, job] of state.fan.slice(0, 5).entries()) {
       const line = index === 0
-        ? `  ${theme.fg("accent", SPINNER_FRAMES[spinnerFrame])} ${theme.fg("accent", theme.bold(job.label))}`
-        : `  ${theme.fg("muted", `▢ ${job.label}`)}`;
+        ? `  └ ${theme.fg("accent", `■ ${theme.bold(job.label)}`)}`
+        : `    ${theme.fg("muted", `□ ${job.label}`)}`;
       lines.push(truncateToWidth(line, width, "…"));
     }
     if (state.fan.length > 5) {
-      lines.push(truncateToWidth(theme.fg("dim", `   ... +${state.fan.length - 5} pending`), width, "…"));
+      lines.push(truncateToWidth(theme.fg("dim", `     ... +${state.fan.length - 5} pending`), width, "…"));
     }
     return lines;
   };
