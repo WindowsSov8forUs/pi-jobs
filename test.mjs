@@ -264,6 +264,11 @@ try {
   assert.equal(blocked.details.state.state, "blocked");
   const firstTerminalAt = blocked.details.state.firstTerminalAt;
   assert.ok(firstTerminalAt);
+  await emit("message_end", {
+    message: { role: "user", content: [{ type: "text", text: "Continue by evaluating this reply" }], timestamp: 103_500 },
+  });
+  assert.equal(readState().state, "working", "any user message must immediately resume a blocked lifecycle");
+  assert.equal(readState().detail, "Continue by evaluating this reply");
   now = 104_000;
   await execute("update_jobs_state", { state: "working", detail: "Approval received" });
   assert.equal(readState().firstTerminalAt, firstTerminalAt, "first terminal timestamp must not be overwritten");
@@ -320,7 +325,7 @@ try {
     },
   });
   timeline = readTimeline();
-  assert.equal(timeline.length, 2, "thinking/tool-only assistant message must not enter timeline");
+  assert.equal(timeline.length, 3, "thinking/tool-only assistant message must not enter timeline");
   assert.equal(readState().tokens, 12_350, "an assistant event not yet in branch is included once without cache tokens");
 
   branch = [{
@@ -472,7 +477,17 @@ try {
   assert.equal(readTimeline().at(-1).state, "blocked");
   assert.equal(readTimeline().at(-1).detail, state.detail);
 
-  await execute("update_jobs_state", { state: "working", detail: "Retrying after provider recovery" });
+  await emit("message_end", {
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "Please continue after the provider recovered" }],
+      timestamp: 110_100,
+    },
+  });
+  state = readState();
+  assert.equal(state.state, "working", "a user continuation immediately clears an automatic model-error block");
+  assert.equal(state.detail, "Please continue after the provider recovered");
+  assert.equal(readTimeline().at(-1).state, "working");
   const workingWidget = widgetFactory(runtime, theme).render(200);
   assert.match(workingWidget[0], /^<accent>⠋<\/accent> <accent>Second lifecycle/);
   assert.equal(workingWidget[1], "  └ <accent>■ <bold>Parallel A</bold></accent>");

@@ -1043,19 +1043,29 @@ export default function piJobs(pi: ExtensionAPI) {
     if (message.role === "user") {
       const text = getMessageText(message.content);
       if (!text) return;
-      const entry: TimelineEntry = {
-        at: isoTime(message.timestamp),
-        state: state?.state ?? "working",
-        detail: text,
-        text: "",
-      };
       if (!state) {
-        pendingUserMessage = entry;
+        pendingUserMessage = {
+          at: isoTime(message.timestamp),
+          state: "working",
+          detail: text,
+          text: "",
+        };
         return;
       }
       await enqueue(() => {
-        appendTimeline(entry);
+        if (!state) return;
+        if (state.state === "blocked") {
+          state.state = "working";
+          state.detail = cleanText(text, 2000);
+        }
+        appendTimeline({
+          at: isoTime(message.timestamp),
+          state: state.state,
+          detail: text,
+          text: "",
+        });
         persistState(ctx);
+        syncWidget(ctx);
       });
       return;
     }

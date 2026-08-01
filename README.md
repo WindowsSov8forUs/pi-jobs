@@ -111,6 +111,7 @@ Use memory for evidence, intermediate data, long logs, and summaries needed acro
 }
 ```
 
+- Any user message immediately changes an active `blocked` lifecycle back to `working` before the next agent run. The model can then evaluate whether the previous blocker is resolved as part of normal task execution.
 - `tokens` is the sum of assistant `usage.input + usage.output` from the current lifecycle's `createdAt` until the queue becomes `done`. Cache reads and writes, earlier conversation, and post-completion discussion are excluded; older usage records fall back to `totalTokens - cacheRead - cacheWrite`.
 - `activeTimeMs` starts when `start_jobs` creates the lifecycle, counts only active agent execution, and freezes when the queue becomes `done`. Time before `start_jobs`, offline/user-wait time, and post-completion discussion are excluded. Active intervals are checkpointed on every state write, so `state.json` and `check_jobs` stay close to the live Widget value instead of updating only after settlement.
 - `firstTerminalAt` records the first transition to `blocked` or `done`.
