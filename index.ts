@@ -118,6 +118,8 @@ type MessageLike = {
   role?: string;
   content?: unknown;
   timestamp?: number;
+  stopReason?: string;
+  errorMessage?: string;
   usage?: {
     input?: number;
     output?: number;
@@ -344,6 +346,7 @@ export default function piJobs(pi: ExtensionAPI) {
   let agentRunning = false;
   let activeStartedAt: number | undefined;
   let pendingUserMessage: TimelineEntry | undefined;
+  let pendingModelError: { at: string; detail: string } | undefined;
   let operationTail: Promise<void> = Promise.resolve();
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -477,7 +480,11 @@ export default function piJobs(pi: ExtensionAPI) {
   };
 
   const startSpinner = (): void => {
-    if (spinnerTimer || !state?.fan.length || currentContext?.mode !== "tui") return;
+    if (state?.state !== "working") {
+      stopSpinner();
+      return;
+    }
+    if (spinnerTimer || !state.fan.length || currentContext?.mode !== "tui") return;
     spinnerTimer = setInterval(() => {
       spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
       requestWidgetRender();
@@ -487,13 +494,16 @@ export default function piJobs(pi: ExtensionAPI) {
 
   const renderWidget = (theme: Theme, width: number): string[] => {
     if (!state || state.fan.length === 0) return [];
-    const spinner = theme.fg("accent", SPINNER_FRAMES[spinnerFrame]);
-    const title = theme.fg("accent", `${state.name}...`);
+    const blocked = state.state === "blocked";
+    const status = blocked
+      ? theme.fg("error", "!")
+      : theme.fg("accent", SPINNER_FRAMES[spinnerFrame]);
+    const title = theme.fg(blocked ? "error" : "accent", `${state.name}...${blocked ? " [blocked]" : ""}`);
     const metrics = theme.fg("dim", `(${formatDuration(currentActiveTime())} · ↓ ${formatTokens(state.tokens)} tokens)`);
-    const lines = [truncateToWidth(`${spinner} ${title} ${metrics}`, width, "…")];
+    const lines = [truncateToWidth(`${status} ${title} ${metrics}`, width, "…")];
     for (const [index, job] of state.fan.slice(0, 5).entries()) {
       const line = index === 0
-        ? `  └ ${theme.fg("accent", `■ ${theme.bold(job.label)}`)}`
+        ? `  └ ${theme.fg(blocked ? "error" : "accent", `■ ${theme.bold(job.label)}`)}`
         : `    ${theme.fg("muted", `□ ${job.label}`)}`;
       lines.push(truncateToWidth(line, width, "…"));
     }
@@ -644,6 +654,7 @@ export default function piJobs(pi: ExtensionAPI) {
         mkdirSync(runtimePaths.tmpPath, { recursive: true });
         if (!existsSync(runtimePaths.timelinePath)) writeFileSync(runtimePaths.timelinePath, "", { encoding: "utf8", mode: 0o600 });
         const now = isoTime();
+        pendingModelError = undefined;
         state = {
           state: "working",
           detail: cleanText(params.detail ?? params.intent, 2000),
@@ -981,6 +992,7 @@ export default function piJobs(pi: ExtensionAPI) {
       paths = resolvePaths(ctx);
       state = loadStateIfPresent(ctx);
       pendingUserMessage = undefined;
+      pendingModelError = undefined;
       if (state) {
         refreshMetadata(ctx);
         persistState(ctx);
@@ -1009,6 +1021,18 @@ export default function piJobs(pi: ExtensionAPI) {
     await enqueue(() => {
       settleActiveTime();
       agentRunning = false;
+      if (state && state.state !== "done" && pendingModelError) {
+        state.state = "blocked";
+        state.detail = pendingModelError.detail;
+        markTerminal();
+        appendTimeline({
+          at: pendingModelError.at,
+          state: "blocked",
+          detail: pendingModelError.detail,
+          text: "",
+        });
+      }
+      pendingModelError = undefined;
       if (state) persistState(ctx);
       syncWidget(ctx);
     });
@@ -1039,6 +1063,15 @@ export default function piJobs(pi: ExtensionAPI) {
     const text = getMessageText(message.content);
     await enqueue(() => {
       if (!state) return;
+      if (message.stopReason === "error") {
+        const errorMessage = cleanText(message.errorMessage ?? text ?? "Unknown model error", 2000);
+        pendingModelError = {
+          at: isoTime(message.timestamp),
+          detail: `Model call failed: ${errorMessage}`,
+        };
+      } else {
+        pendingModelError = undefined;
+      }
       if (text) {
         appendTimeline({
           at: isoTime(message.timestamp),
@@ -1056,6 +1089,7 @@ export default function piJobs(pi: ExtensionAPI) {
     await enqueue(() => {
       settleActiveTime();
       agentRunning = false;
+      pendingModelError = undefined;
       if (state) persistState(ctx);
       stopSpinner();
       widgetTui = undefined;

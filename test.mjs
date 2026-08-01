@@ -168,6 +168,7 @@ try {
   );
   assert.ok(handlers.has("session_start"));
   assert.ok(handlers.has("message_end"));
+  assert.ok(handlers.has("agent_start"));
   assert.ok(handlers.has("agent_settled"));
 
   await emit("session_start", { reason: "startup" });
@@ -422,11 +423,65 @@ try {
   assert.equal(readTimeline().length, timelineCount, "resume/reload must not replay timeline messages");
   assert.ok(widgets.has("pi-jobs"), "resume restores non-empty fan widget");
 
+  now = 108_000;
+  await emit("agent_start");
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [],
+      timestamp: 108_100,
+      stopReason: "error",
+      errorMessage: "OpenAI API error (502): 502 status code (no body)",
+      usage: { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  assert.equal(readState().state, "working", "a retryable model failure must wait for agent settlement");
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Retry recovered" }],
+      timestamp: 108_200,
+      stopReason: "stop",
+      usage: { totalTokens: 2, input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  await emit("agent_settled");
+  assert.equal(readState().state, "working", "a successful automatic retry clears the pending model error");
+
+  now = 109_000;
+  await emit("agent_start");
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [],
+      timestamp: 109_100,
+      stopReason: "error",
+      errorMessage: "OpenAI API error (502): 502 status code (no body)",
+      usage: { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  assert.equal(readState().state, "working", "model errors are not blocked until Pi has exhausted automatic recovery");
+  now = 110_000;
+  await emit("agent_settled");
+  state = readState();
+  assert.equal(state.state, "blocked");
+  assert.equal(state.detail, "Model call failed: OpenAI API error (502): 502 status code (no body)");
+  const blockedWidget = widgetFactory(runtime, theme).render(200);
+  assert.match(blockedWidget[0], /^<error>!<\/error> <error>Second lifecycle\.\.\. \[blocked\]<\/error>/);
+  assert.equal(blockedWidget[1], "  └ <error>■ <bold>Parallel A</bold></error>");
+  assert.equal(readTimeline().at(-1).state, "blocked");
+  assert.equal(readTimeline().at(-1).detail, state.detail);
+
+  await execute("update_jobs_state", { state: "working", detail: "Retrying after provider recovery" });
+  const workingWidget = widgetFactory(runtime, theme).render(200);
+  assert.match(workingWidget[0], /^<accent>⠋<\/accent> <accent>Second lifecycle/);
+  assert.equal(workingWidget[1], "  └ <accent>■ <bold>Parallel A</bold></accent>");
+
   const firstParallelFinished = await execute("finish_job", { jobId: "job-1" });
   assert.equal(firstParallelFinished.details.finalMetrics, undefined, "non-terminal finish_job must not report final metrics");
   const lastParallelFinished = await execute("finish_job", { jobId: "job-2" });
-  assert.match(lastParallelFinished.content[0].text, /Final metrics: active time 0\.0s \(0 ms\); non-cache tokens 0 \(0\)\./);
-  assert.equal(lastParallelFinished.details.finalMetrics.activeTimeMs, 0);
+  assert.match(lastParallelFinished.content[0].text, /Final metrics: active time 1\.0s \(1000 ms\); non-cache tokens 0 \(0\)\./);
+  assert.equal(lastParallelFinished.details.finalMetrics.activeTimeMs, 1_000);
   assert.equal(lastParallelFinished.details.finalMetrics.tokens, 0);
   assert.equal(readState().state, "done");
 

@@ -42,7 +42,7 @@ Recommended flow:
 3. Work only on the returned head job.
 4. Call `finish_job({ jobId })` when the head is complete or no longer needed.
 5. Call `pend_job({ jobId })` when the head should move behind the other jobs.
-6. Use `update_jobs_state({ state, detail })` for working/blocked status.
+6. Use `update_jobs_state({ state, detail })` for working/blocked status. A final assistant provider/API error automatically changes an active lifecycle to `blocked` after Pi has exhausted automatic retry/recovery; a successful retry leaves it `working`.
 7. Use `finish_jobs({ detail? })` to clear the entire queue and mark it done.
 8. Use `check_jobs()` whenever the current state is uncertain.
 
@@ -142,7 +142,15 @@ While fan is non-empty, a widget above the editor shows:
     □ Run focused tests
 ```
 
-The title uses a live Braille spinner. The current job is marked `■` under a `└` connector, while pending jobs use `□`. At most five jobs are shown; additional jobs appear as `... +N pending`. Token totals use compact `k`/`M` notation. Empty fan removes the widget.
+A blocked lifecycle is visually distinct and does not animate:
+
+```text
+! Implement feature... [blocked] (12.5s · ↓ 12.3k tokens)
+  └ ■ Inspect the codebase
+    □ Implement the change
+```
+
+The working title uses a live Braille spinner. The current job is marked `■` under a `└` connector, while pending jobs use `□`. Blocked status uses the theme error color for `!`, the title, and the current job. At most five jobs are shown; additional jobs appear as `... +N pending`. Token totals use compact `k`/`M` notation. Empty fan removes the widget.
 
 ## Development
 
