@@ -355,6 +355,7 @@ export default function piJobs(pi: ExtensionAPI) {
   let pendingUserMessage: TimelineEntry | undefined;
   let pendingModelError: { detail: string } | undefined;
   let pendingAssistantTimelineDetails: string | undefined;
+  let pendingUserStateAtSend: JobsStateValue | undefined;
   let operationTail: Promise<void> = Promise.resolve();
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -664,6 +665,7 @@ export default function piJobs(pi: ExtensionAPI) {
         const now = isoTime();
         pendingModelError = undefined;
         pendingAssistantTimelineDetails = undefined;
+        pendingUserStateAtSend = undefined;
         state = {
           state: "working",
           detail: cleanText(params.detail ?? params.intent, 2000),
@@ -1023,6 +1025,7 @@ export default function piJobs(pi: ExtensionAPI) {
       pendingUserMessage = undefined;
       pendingModelError = undefined;
       pendingAssistantTimelineDetails = undefined;
+      pendingUserStateAtSend = undefined;
       if (state) {
         refreshMetadata(ctx);
         persistState(ctx);
@@ -1037,6 +1040,30 @@ export default function piJobs(pi: ExtensionAPI) {
       state ??= loadStateIfPresent(ctx);
       if (state) persistState(ctx);
       syncWidget(ctx);
+    });
+  });
+
+  pi.on("before_agent_start", async (event: { prompt: string }, ctx) => {
+    return enqueue(() => {
+      currentContext = ctx;
+      state ??= loadStateIfPresent(ctx);
+      if (!state || state.state !== "blocked") return;
+      pendingUserStateAtSend = "blocked";
+      state.state = "working";
+      const prompt = cleanText(event.prompt, 2000);
+      if (prompt) state.detail = prompt;
+      const head = state.fan[0] ? { ...state.fan[0] } : undefined;
+      persistState(ctx);
+      syncWidget(ctx);
+      if (!head) return;
+      return {
+        message: {
+          customType: "pi-jobs-resume",
+          content: `Jobs resumed from blocked to working after the user's latest message.\nCurrent head job: ${head.id} — ${head.label}\nContinue from this current head job and use its ID for strict-head queue operations until the queue changes.`,
+          display: false,
+          details: { jobId: head.id, label: head.label },
+        },
+      };
     });
   });
 
@@ -1078,7 +1105,8 @@ export default function piJobs(pi: ExtensionAPI) {
       }
       await enqueue(() => {
         if (!state) return;
-        const stateAtSend = state.state;
+        const stateAtSend = pendingUserStateAtSend ?? state.state;
+        pendingUserStateAtSend = undefined;
         pendingAssistantTimelineDetails = undefined;
         if (state.state === "blocked") {
           state.state = "working";
@@ -1131,6 +1159,7 @@ export default function piJobs(pi: ExtensionAPI) {
       agentRunning = false;
       pendingModelError = undefined;
       pendingAssistantTimelineDetails = undefined;
+      pendingUserStateAtSend = undefined;
       if (state) persistState(ctx);
       stopSpinner();
       widgetTui = undefined;

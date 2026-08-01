@@ -126,7 +126,9 @@ const runtime = {
 };
 
 const emit = async (name, event = {}, eventCtx = ctx) => {
-  for (const handler of handlers.get(name) ?? []) await handler(event, eventCtx);
+  const results = [];
+  for (const handler of handlers.get(name) ?? []) results.push(await handler(event, eventCtx));
+  return results;
 };
 
 const execute = async (name, params = {}, executionCtx = ctx) => {
@@ -175,6 +177,7 @@ try {
   );
   assert.ok(handlers.has("session_start"));
   assert.ok(handlers.has("message_end"));
+  assert.ok(handlers.has("before_agent_start"));
   assert.ok(handlers.has("agent_start"));
   assert.ok(handlers.has("agent_settled"));
 
@@ -271,14 +274,20 @@ try {
   assert.equal(blocked.details.state.state, "blocked");
   const firstTerminalAt = blocked.details.state.firstTerminalAt;
   assert.ok(firstTerminalAt);
+  const manualResumeContext = (await emit("before_agent_start", { prompt: "Continue by evaluating this reply" }))[0];
+  assert.equal(readState().state, "working", "before_agent_start immediately resumes a blocked lifecycle");
+  assert.equal(readState().detail, "Continue by evaluating this reply");
+  assert.equal(manualResumeContext.message.customType, "pi-jobs-resume");
+  assert.equal(manualResumeContext.message.display, false);
+  assert.deepEqual(manualResumeContext.message.details, { jobId: "job-3", label: "Implement changes" });
+  assert.match(manualResumeContext.message.content, /Current head job: job-3 — Implement changes/);
   await emit("message_end", {
     message: { role: "user", content: [{ type: "text", text: "Continue by evaluating this reply" }], timestamp: 103_500 },
   });
-  assert.equal(readState().state, "working", "any user message must immediately resume a blocked lifecycle");
-  assert.equal(readState().detail, "Continue by evaluating this reply");
-  assert.equal(readTimeline().at(-1).state, "blocked", "user timeline entries preserve the state at send time");
+  assert.equal(readTimeline().at(-1).state, "blocked", "user timeline entries preserve the state before before_agent_start resumed it");
   assert.equal(readTimeline().at(-1).detail, "Continue by evaluating this reply");
   assert.equal(readTimeline().at(-1).text, "");
+  assert.equal((await emit("before_agent_start", { prompt: "same turn duplicate check" }))[0], undefined, "resume context is injected only once");
   now = 104_000;
   await execute("update_jobs_state", { state: "working", detail: "Approval received" });
   assert.equal(readState().firstTerminalAt, firstTerminalAt, "first terminal timestamp must not be overwritten");
@@ -522,6 +531,12 @@ try {
   assert.equal(terminalErrorEntry.detail, "OpenAI API error (502): 502 status code (no body)");
   assert.equal(terminalErrorEntry.text, terminalErrorEntry.detail);
 
+  const errorResumeContext = (await emit("before_agent_start", { prompt: "Please continue after the provider recovered" }))[0];
+  state = readState();
+  assert.equal(state.state, "working", "before_agent_start clears an automatic model-error block");
+  assert.equal(state.detail, "Please continue after the provider recovered");
+  assert.deepEqual(errorResumeContext.message.details, { jobId: "job-1", label: "Parallel A" });
+  assert.match(errorResumeContext.message.content, /Current head job: job-1 — Parallel A/);
   await emit("message_end", {
     message: {
       role: "user",
@@ -529,11 +544,8 @@ try {
       timestamp: 110_100,
     },
   });
-  state = readState();
-  assert.equal(state.state, "working", "a user continuation immediately clears an automatic model-error block");
-  assert.equal(state.detail, "Please continue after the provider recovered");
   const continuationEntry = readTimeline().at(-1);
-  assert.equal(continuationEntry.state, "blocked", "continuation records the state before automatic resume");
+  assert.equal(continuationEntry.state, "blocked", "continuation records the state before before_agent_start resumed it");
   assert.equal(continuationEntry.detail, "Please continue after the provider recovered");
   assert.equal(continuationEntry.text, "");
   const workingWidget = widgetFactory(runtime, theme).render(200);
