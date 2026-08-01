@@ -136,11 +136,17 @@ const execute = async (name, params = {}, executionCtx = ctx) => {
 };
 
 const readState = () => JSON.parse(readFileSync(join(agentDir, "jobs", "abcdef12", "state.json"), "utf8"));
-const readTimeline = () => readFileSync(join(agentDir, "jobs", "abcdef12", "timeline.jsonl"), "utf8")
-  .trim()
-  .split("\n")
-  .filter(Boolean)
-  .map((line) => JSON.parse(line));
+const readTimeline = () => {
+  const entries = readFileSync(join(agentDir, "jobs", "abcdef12", "timeline.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  for (const entry of entries) {
+    assert.deepEqual(Object.keys(entry), ["at", "state", "detail", "text"], "timeline entries have exactly four ordered fields");
+  }
+  return entries;
+};
 
 const realDateNow = Date.now;
 let now = 100_000;
@@ -162,6 +168,7 @@ try {
       "job_memory_read",
       "job_memory_write",
       "pend_job",
+      "record_jobs_timeline",
       "start_jobs",
       "update_jobs_state",
     ],
@@ -269,6 +276,9 @@ try {
   });
   assert.equal(readState().state, "working", "any user message must immediately resume a blocked lifecycle");
   assert.equal(readState().detail, "Continue by evaluating this reply");
+  assert.equal(readTimeline().at(-1).state, "blocked", "user timeline entries preserve the state at send time");
+  assert.equal(readTimeline().at(-1).detail, "Continue by evaluating this reply");
+  assert.equal(readTimeline().at(-1).text, "");
   now = 104_000;
   await execute("update_jobs_state", { state: "working", detail: "Approval received" });
   assert.equal(readState().firstTerminalAt, firstTerminalAt, "first terminal timestamp must not be overwritten");
@@ -327,6 +337,31 @@ try {
   timeline = readTimeline();
   assert.equal(timeline.length, 3, "thinking/tool-only assistant message must not enter timeline");
   assert.equal(readState().tokens, 12_350, "an assistant event not yet in branch is included once without cache tokens");
+
+  await execute("record_jobs_timeline", { detail: "Summarize the completed checkpoint" });
+  const timelineLengthBeforeIntermediateToolUse = readTimeline().length;
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Checking one more source." }, { type: "toolCall", id: "y", name: "read", arguments: {} }],
+      timestamp: 104_625,
+      stopReason: "toolUse",
+      usage: { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  assert.equal(readTimeline().length, timelineLengthBeforeIntermediateToolUse, "tool-use text must not consume a pending timeline summary");
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "First paragraph." }, { type: "text", text: "Second paragraph." }],
+      timestamp: 104_650,
+      stopReason: "stop",
+      usage: { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  timeline = readTimeline();
+  assert.equal(timeline.at(-1).detail, "Summarize the completed checkpoint");
+  assert.equal(timeline.at(-1).text, "First paragraph.\nSecond paragraph.", "recorded assistant text includes every text block");
 
   branch = [{
     type: "message",
@@ -441,6 +476,12 @@ try {
     },
   });
   assert.equal(readState().state, "working", "a retryable model failure must wait for agent settlement");
+  let errorTimeline = readTimeline();
+  const firstErrorEntry = errorTimeline.at(-1);
+  assert.equal(firstErrorEntry.state, "working");
+  assert.equal(firstErrorEntry.detail, "OpenAI API error (502): 502 status code (no body)");
+  assert.equal(firstErrorEntry.text, firstErrorEntry.detail, "model error detail and text must match");
+  const timelineLengthAfterRetryableError = errorTimeline.length;
   await emit("message_end", {
     message: {
       role: "assistant",
@@ -452,6 +493,7 @@ try {
   });
   await emit("agent_settled");
   assert.equal(readState().state, "working", "a successful automatic retry clears the pending model error");
+  assert.equal(readTimeline().length, timelineLengthAfterRetryableError, "unmarked successful output must not enter timeline");
 
   now = 109_000;
   await emit("agent_start");
@@ -474,8 +516,11 @@ try {
   const blockedWidget = widgetFactory(runtime, theme).render(200);
   assert.match(blockedWidget[0], /^<error>!<\/error> <error>Second lifecycle\.\.\. \[blocked\]<\/error>/);
   assert.equal(blockedWidget[1], "  └ <error>■ <bold>Parallel A</bold></error>");
-  assert.equal(readTimeline().at(-1).state, "blocked");
-  assert.equal(readTimeline().at(-1).detail, state.detail);
+  errorTimeline = readTimeline();
+  const terminalErrorEntry = errorTimeline.at(-1);
+  assert.equal(terminalErrorEntry.state, "working", "error entries preserve state when the error message was produced");
+  assert.equal(terminalErrorEntry.detail, "OpenAI API error (502): 502 status code (no body)");
+  assert.equal(terminalErrorEntry.text, terminalErrorEntry.detail);
 
   await emit("message_end", {
     message: {
@@ -487,7 +532,10 @@ try {
   state = readState();
   assert.equal(state.state, "working", "a user continuation immediately clears an automatic model-error block");
   assert.equal(state.detail, "Please continue after the provider recovered");
-  assert.equal(readTimeline().at(-1).state, "working");
+  const continuationEntry = readTimeline().at(-1);
+  assert.equal(continuationEntry.state, "blocked", "continuation records the state before automatic resume");
+  assert.equal(continuationEntry.detail, "Please continue after the provider recovered");
+  assert.equal(continuationEntry.text, "");
   const workingWidget = widgetFactory(runtime, theme).render(200);
   assert.match(workingWidget[0], /^<accent>⠋<\/accent> <accent>Second lifecycle/);
   assert.equal(workingWidget[1], "  └ <accent>■ <bold>Parallel A</bold></accent>");

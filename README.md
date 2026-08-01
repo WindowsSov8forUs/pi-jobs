@@ -43,8 +43,9 @@ Recommended flow:
 4. Call `finish_job({ jobId })` when the head is complete or no longer needed.
 5. Call `pend_job({ jobId })` when the head should move behind the other jobs.
 6. Use `update_jobs_state({ state, detail })` for working/blocked status. A final assistant provider/API error automatically changes an active lifecycle to `blocked` after Pi has exhausted automatic retry/recovery; a successful retry leaves it `working`.
-7. Use `finish_jobs({ detail? })` to clear the entire queue and mark it done.
-8. Use `check_jobs()` whenever the current state is uncertain.
+7. Use `record_jobs_timeline({ detail })` when the next finalized assistant text should be recorded with a concise model-generated summary without changing jobs state. Calling `update_jobs_state` also marks the next finalized assistant text using its `detail` as the summary.
+8. Use `finish_jobs({ detail? })` to clear the entire queue and mark it done.
+9. Use `check_jobs()` whenever the current state is uncertain.
 
 `finish_job` and `pend_job` accept only the current head ID. This guards against stale model state deleting or moving the wrong job.
 
@@ -126,11 +127,16 @@ State writes use a temporary file and rename. A malformed state file produces an
 `timeline.jsonl` stores one JSON object per relevant finalized message:
 
 ```json
-{"at":"2026-01-01T00:00:00.000Z","state":"working","detail":"User input","text":""}
-{"at":"2026-01-01T00:01:00.000Z","state":"blocked","detail":"Waiting for a decision","text":"Assistant output"}
+{"at":"2026-01-01T00:00:00.000Z","state":"blocked","detail":"Please retry the provider request","text":""}
+{"at":"2026-01-01T00:01:00.000Z","state":"working","detail":"Provider recovered and validation completed","text":"The retry succeeded.\nAll focused checks now pass."}
+{"at":"2026-01-01T00:02:00.000Z","state":"working","detail":"OpenAI API error (502): no body","text":"OpenAI API error (502): no body"}
 ```
 
-User text is stored in `detail`; finalized assistant text is stored in `text`. Thinking, tool results, images, and assistant messages containing only tool calls are not recorded. Resume listens only for new messages and does not replay old entries.
+- Every entry has exactly four fields in this order: `at`, `state`, `detail`, and `text`.
+- User messages are always recorded with the complete user text in `detail` and an empty `text`. `state` is captured before a user message automatically resumes a blocked lifecycle, preserving the fact that the message was sent while blocked.
+- Normal assistant output is recorded only when the model explicitly arms it: `update_jobs_state.detail` supplies the summary, or `record_jobs_timeline.detail` supplies one without changing state. The summary is stored in `detail`; every finalized text block is joined into `text`. Intermediate tool-use messages do not consume the pending summary.
+- Assistant errors are always recorded without an explicit marker. The provider `errorMessage` is written identically to both `detail` and `text`.
+- Thinking, tool results, images, and assistant messages containing only tool calls are not recorded. Resume listens only for new messages and does not replay old entries. Existing and new entries use the same singular `detail` field.
 
 ## Widget
 

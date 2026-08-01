@@ -35,12 +35,15 @@ const MAX_LABEL_LENGTH = 500;
 const MAX_MEMORY_CONTENT_LENGTH = 1_000_000;
 const MEMORY_GUIDANCE =
   "Use job_memory_write for durable cross-job facts, evidence, summaries, and intermediate data; later read only the needed slices to reduce repeated token usage.";
+const TIMELINE_GUIDANCE =
+  "Use record_jobs_timeline with a concise model-generated summary when the next finalized assistant text should be recorded without changing jobs state. update_jobs_state automatically uses its detail as the summary for the next finalized assistant text.";
 
 const START_GUIDANCE = [
   "Use start_jobs when a task is complex and has multiple execution stages; simple tasks do not need a jobs queue.",
   "After start_jobs, use create_job once to enqueue the task stages from beginning to end, then work on the returned head job.",
   "Use finish_job when the current head job is complete or no longer needed, and use pend_job when the current head should be delayed.",
   "Use finish_jobs when the entire remaining queue is no longer needed, and check_jobs when the current jobs state is uncertain.",
+  TIMELINE_GUIDANCE,
   MEMORY_GUIDANCE,
 ] as const;
 
@@ -157,6 +160,10 @@ const updateStateSchema = Type.Object({
 
 const finishJobsSchema = Type.Object({
   detail: Type.Optional(Type.String({ minLength: 1, maxLength: 2000, description: "Final task detail" })),
+});
+
+const recordTimelineSchema = Type.Object({
+  detail: Type.String({ minLength: 1, maxLength: 2000, description: "Concise model-generated summary for the next finalized assistant text" }),
 });
 
 const memoryWriteSchema = Type.Object({
@@ -346,7 +353,8 @@ export default function piJobs(pi: ExtensionAPI) {
   let agentRunning = false;
   let activeStartedAt: number | undefined;
   let pendingUserMessage: TimelineEntry | undefined;
-  let pendingModelError: { at: string; detail: string } | undefined;
+  let pendingModelError: { detail: string } | undefined;
+  let pendingAssistantTimelineDetails: string | undefined;
   let operationTail: Promise<void> = Promise.resolve();
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -655,6 +663,7 @@ export default function piJobs(pi: ExtensionAPI) {
         if (!existsSync(runtimePaths.timelinePath)) writeFileSync(runtimePaths.timelinePath, "", { encoding: "utf8", mode: 0o600 });
         const now = isoTime();
         pendingModelError = undefined;
+        pendingAssistantTimelineDetails = undefined;
         state = {
           state: "working",
           detail: cleanText(params.detail ?? params.intent, 2000),
@@ -677,7 +686,7 @@ export default function piJobs(pi: ExtensionAPI) {
         };
         activeStartedAt = agentRunning ? Date.now() : undefined;
         if (pendingUserMessage) {
-          appendTimeline({ ...pendingUserMessage, state: "working" });
+          appendTimeline(pendingUserMessage);
           pendingUserMessage = undefined;
         }
         persistState(ctx);
@@ -826,6 +835,7 @@ export default function piJobs(pi: ExtensionAPI) {
         if (params.state === "done") freezeLifecycle(ctx);
         current.state.state = params.state;
         current.state.detail = cleanText(params.detail, 2000);
+        pendingAssistantTimelineDetails = current.state.detail;
         if (params.state === "blocked" || params.state === "done") markTerminal();
         persistState(ctx);
         syncWidget(ctx);
@@ -835,6 +845,25 @@ export default function piJobs(pi: ExtensionAPI) {
           ? `Jobs state updated to ${params.state}. Current head job: ${head.id} — ${head.label}`
           : `Jobs state updated to ${params.state}. ${noRemainingText}${lifecycleDone ? `\n${finalMetricsText()}` : ""}`;
         return { content: [{ type: "text", text }], details: toolDetails(current.paths, undefined, lifecycleDone) };
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "record_jobs_timeline",
+    label: "Record Jobs Timeline",
+    description: "Attach a concise model-generated summary to the next finalized assistant text and append that output to the jobs timeline without changing state.",
+    promptSnippet: "Record the next finalized assistant output in the jobs timeline",
+    promptGuidelines: [TIMELINE_GUIDANCE],
+    parameters: recordTimelineSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      return enqueue(() => {
+        const current = requireState(ctx);
+        pendingAssistantTimelineDetails = cleanText(params.detail, 2000);
+        return {
+          content: [{ type: "text", text: "The next finalized assistant text will be appended to timeline.jsonl with the supplied detail summary." }],
+          details: toolDetails(current.paths),
+        };
       });
     },
   });
@@ -993,6 +1022,7 @@ export default function piJobs(pi: ExtensionAPI) {
       state = loadStateIfPresent(ctx);
       pendingUserMessage = undefined;
       pendingModelError = undefined;
+      pendingAssistantTimelineDetails = undefined;
       if (state) {
         refreshMetadata(ctx);
         persistState(ctx);
@@ -1025,12 +1055,6 @@ export default function piJobs(pi: ExtensionAPI) {
         state.state = "blocked";
         state.detail = pendingModelError.detail;
         markTerminal();
-        appendTimeline({
-          at: pendingModelError.at,
-          state: "blocked",
-          detail: pendingModelError.detail,
-          text: "",
-        });
       }
       pendingModelError = undefined;
       if (state) persistState(ctx);
@@ -1054,13 +1078,15 @@ export default function piJobs(pi: ExtensionAPI) {
       }
       await enqueue(() => {
         if (!state) return;
+        const stateAtSend = state.state;
+        pendingAssistantTimelineDetails = undefined;
         if (state.state === "blocked") {
           state.state = "working";
           state.detail = cleanText(text, 2000);
         }
         appendTimeline({
           at: isoTime(message.timestamp),
-          state: state.state,
+          state: stateAtSend,
           detail: text,
           text: "",
         });
@@ -1075,20 +1101,24 @@ export default function piJobs(pi: ExtensionAPI) {
       if (!state) return;
       if (message.stopReason === "error") {
         const errorMessage = cleanText(message.errorMessage ?? text ?? "Unknown model error", 2000);
-        pendingModelError = {
-          at: isoTime(message.timestamp),
-          detail: `Model call failed: ${errorMessage}`,
-        };
-      } else {
-        pendingModelError = undefined;
-      }
-      if (text) {
+        pendingModelError = { detail: `Model call failed: ${errorMessage}` };
         appendTimeline({
           at: isoTime(message.timestamp),
           state: state.state,
-          detail: state.detail,
-          text,
+          detail: errorMessage,
+          text: errorMessage,
         });
+      } else {
+        pendingModelError = undefined;
+        if (text && message.stopReason !== "toolUse" && pendingAssistantTimelineDetails) {
+          appendTimeline({
+            at: isoTime(message.timestamp),
+            state: state.state,
+            detail: pendingAssistantTimelineDetails,
+            text,
+          });
+          pendingAssistantTimelineDetails = undefined;
+        }
       }
       persistState(ctx, message);
       syncWidget(ctx);
@@ -1100,6 +1130,7 @@ export default function piJobs(pi: ExtensionAPI) {
       settleActiveTime();
       agentRunning = false;
       pendingModelError = undefined;
+      pendingAssistantTimelineDetails = undefined;
       if (state) persistState(ctx);
       stopSpinner();
       widgetTui = undefined;
