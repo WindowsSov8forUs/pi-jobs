@@ -42,7 +42,7 @@ Recommended flow:
 3. Work only on the returned head job.
 4. Call `finish_job({ jobId })` when the head is complete or no longer needed.
 5. Call `pend_job({ jobId })` when the head should move behind the other jobs.
-6. Use `update_jobs_state({ state, detail })` for working/blocked status. A final assistant provider/API error automatically changes an active lifecycle to `blocked` after Pi has exhausted automatic retry/recovery; a successful retry leaves it `working`.
+6. Use `update_jobs_state({ state, detail })` for working/blocked status. A final assistant provider/API error or aborted model operation automatically changes an active lifecycle to `blocked` after Pi settles; a successful automatic retry leaves it `working`.
 7. Use `record_jobs_timeline({ detail })` when the next finalized assistant text should be recorded with a concise model-generated summary without changing jobs state. Calling `update_jobs_state` also marks the next finalized assistant text using its `detail` as the summary.
 8. Use `finish_jobs({ detail? })` to clear the entire queue and mark it done.
 9. Use `check_jobs()` whenever the current state is uncertain.
@@ -135,7 +135,7 @@ State writes use a temporary file and rename. A malformed state file produces an
 - Every entry has exactly four fields in this order: `at`, `state`, `detail`, and `text`.
 - User messages are always recorded with the complete user text in `detail` and an empty `text`. `state` is captured before a user message automatically resumes a blocked lifecycle, preserving the fact that the message was sent while blocked.
 - Normal assistant output is recorded only when the model explicitly arms it: `update_jobs_state.detail` supplies the summary, or `record_jobs_timeline.detail` supplies one without changing state. The summary is stored in `detail`; every finalized text block is joined into `text`. Intermediate tool-use messages do not consume the pending summary.
-- Assistant errors are always recorded without an explicit marker. The provider `errorMessage` is written identically to both `detail` and `text`.
+- Assistant errors and aborted operations are always recorded without an explicit marker. The provider `errorMessage` (for example, `Operation aborted`) is written identically to both `detail` and `text`.
 - Thinking, tool results, images, and assistant messages containing only tool calls are not recorded. Resume listens only for new messages and does not replay old entries. Existing and new entries use the same singular `detail` field.
 
 ## Widget

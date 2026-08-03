@@ -1127,9 +1127,12 @@ export default function piJobs(pi: ExtensionAPI) {
     const text = getMessageText(message.content);
     await enqueue(() => {
       if (!state) return;
-      if (message.stopReason === "error") {
-        const errorMessage = cleanText(message.errorMessage ?? text ?? "Unknown model error", 2000);
-        pendingModelError = { detail: `Model call failed: ${errorMessage}` };
+      if (message.stopReason === "error" || message.stopReason === "aborted") {
+        const aborted = message.stopReason === "aborted";
+        const errorMessage = cleanText(message.errorMessage ?? text ?? (aborted ? "Operation aborted" : "Unknown model error"), 2000);
+        pendingModelError = {
+          detail: aborted ? `Model operation aborted: ${errorMessage}` : `Model call failed: ${errorMessage}`,
+        };
         appendTimeline({
           at: isoTime(message.timestamp),
           state: state.state,

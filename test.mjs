@@ -504,6 +504,39 @@ try {
   assert.equal(readState().state, "working", "a successful automatic retry clears the pending model error");
   assert.equal(readTimeline().length, timelineLengthAfterRetryableError, "unmarked successful output must not enter timeline");
 
+  now = 108_300;
+  await emit("agent_start");
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [],
+      timestamp: 108_400,
+      stopReason: "aborted",
+      errorMessage: "Operation aborted",
+      usage: { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  assert.equal(readState().state, "working", "an aborted operation waits for agent settlement before blocking");
+  const abortedEntry = readTimeline().at(-1);
+  assert.equal(abortedEntry.state, "working");
+  assert.equal(abortedEntry.detail, "Operation aborted");
+  assert.equal(abortedEntry.text, abortedEntry.detail);
+  now = 108_500;
+  await emit("agent_settled");
+  assert.equal(readState().state, "blocked");
+  assert.equal(readState().detail, "Model operation aborted: Operation aborted");
+  const abortResumeContext = (await emit("before_agent_start", { prompt: "Continue after the aborted operation" }))[0];
+  assert.deepEqual(abortResumeContext.message.details, { jobId: "job-1", label: "Parallel A" });
+  await emit("message_end", {
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "Continue after the aborted operation" }],
+      timestamp: 108_600,
+    },
+  });
+  assert.equal(readTimeline().at(-1).state, "blocked", "post-abort continuation preserves its send-time state");
+  assert.equal(readState().state, "working");
+
   now = 109_000;
   await emit("agent_start");
   await emit("message_end", {
@@ -555,8 +588,8 @@ try {
   const firstParallelFinished = await execute("finish_job", { jobId: "job-1" });
   assert.equal(firstParallelFinished.details.finalMetrics, undefined, "non-terminal finish_job must not report final metrics");
   const lastParallelFinished = await execute("finish_job", { jobId: "job-2" });
-  assert.match(lastParallelFinished.content[0].text, /Final metrics: active time 1\.0s \(1000 ms\); non-cache tokens 0 \(0\)\./);
-  assert.equal(lastParallelFinished.details.finalMetrics.activeTimeMs, 1_000);
+  assert.match(lastParallelFinished.content[0].text, /Final metrics: active time 1\.2s \(1200 ms\); non-cache tokens 0 \(0\)\./);
+  assert.equal(lastParallelFinished.details.finalMetrics.activeTimeMs, 1_200);
   assert.equal(lastParallelFinished.details.finalMetrics.tokens, 0);
   assert.equal(readState().state, "done");
 
